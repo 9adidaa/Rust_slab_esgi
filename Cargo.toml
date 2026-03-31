@@ -1,0 +1,15 @@
+[package]
+name = "rust-slab-allocator"
+version = "0.1.0"
+edition = "2021"
+authors = ["MOKDAD Mohamed", "BAKKALI Mohamed"]
+description = "A minimal slab allocator implemented in Rust (no_std)"
+
+[features]
+default = []
+
+[dependencies]
+spin = "0.9"  
+
+[dev-dependencies]
+
