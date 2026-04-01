@@ -51,6 +51,9 @@ impl Slab {
     }
 
     pub unsafe fn dealloc(&mut self, ptr: *mut u8) {
+        debug_assert!(self.contains(ptr));
+        debug_assert!(self.used_slots > 0);
+
         unsafe {
             (ptr as *mut *mut u8).write(self.free_head);
         }
@@ -66,12 +69,20 @@ impl Slab {
         self.used_slots == 0
     }
 
+    pub fn free_slots(&self) -> usize {
+        self.total_slots - self.used_slots
+    }
+
     pub fn total_slots(&self) -> usize {
         self.total_slots
     }
 
     pub fn used_slots(&self) -> usize {
         self.used_slots
+    }
+
+    pub fn slot_size(&self) -> usize {
+        self.slot_size
     }
 
     pub fn page_ptr(&self) -> *mut u8 {
@@ -83,5 +94,166 @@ impl Slab {
         let end = start + PAGE_SIZE;
         let addr = ptr as usize;
         addr >= start && addr < end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aligned_page() -> Vec<u8> {
+        vec![0u8; PAGE_SIZE * 2]
+    }
+
+    fn page_aligned_ptr(buf: &mut Vec<u8>) -> *mut u8 {
+        let ptr = buf.as_mut_ptr();
+        let align_offset = ptr.align_offset(PAGE_SIZE);
+        unsafe { ptr.add(align_offset) }
+    }
+
+    #[test]
+    fn test_slot_count() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+
+        let slab = unsafe { Slab::new(page, 64) };
+        assert_eq!(slab.total_slots(), 64);
+        assert_eq!(slab.used_slots(), 0);
+        assert_eq!(slab.free_slots(), 64);
+        assert!(slab.is_empty());
+        assert!(!slab.is_full());
+    }
+
+    #[test]
+    fn test_minimum_slot_size() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+
+        let slab = unsafe { Slab::new(page, 1) };
+        assert_eq!(slab.slot_size(), MIN_SLOT_SIZE);
+        assert_eq!(slab.total_slots(), PAGE_SIZE / MIN_SLOT_SIZE);
+    }
+
+    #[test]
+    fn test_alloc_returns_unique_pointers() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 128) };
+
+        let total = slab.total_slots();
+        let mut ptrs = Vec::new();
+
+        for _ in 0..total {
+            let ptr = slab.alloc();
+            assert!(!ptr.is_null());
+            assert!(!ptrs.contains(&ptr));
+            ptrs.push(ptr);
+        }
+
+        assert!(slab.is_full());
+        assert_eq!(slab.alloc(), core::ptr::null_mut());
+    }
+
+    #[test]
+    fn test_alloc_pointers_are_slot_aligned() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 64) };
+
+        for _ in 0..slab.total_slots() {
+            let ptr = slab.alloc();
+            assert!(!ptr.is_null());
+            let offset = (ptr as usize) - (page as usize);
+            assert_eq!(offset % 64, 0);
+        }
+    }
+
+    #[test]
+    fn test_full_returns_null() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 2048) };
+
+        assert!(!slab.alloc().is_null());
+        assert!(!slab.alloc().is_null());
+        assert!(slab.alloc().is_null());
+        assert!(slab.is_full());
+    }
+
+    #[test]
+    fn test_dealloc_makes_slot_reusable() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 64) };
+
+        let ptr = slab.alloc();
+        assert_eq!(slab.used_slots(), 1);
+
+        unsafe { slab.dealloc(ptr) };
+        assert_eq!(slab.used_slots(), 0);
+        assert!(slab.is_empty());
+
+        let ptr2 = slab.alloc();
+        assert_eq!(ptr, ptr2);
+    }
+
+    #[test]
+    fn test_alloc_dealloc_cycle() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 256) };
+
+        let mut ptrs: Vec<*mut u8> = (0..16).map(|_| slab.alloc()).collect();
+        assert!(slab.is_full());
+
+        for i in (0..16).step_by(2) {
+            unsafe { slab.dealloc(ptrs[i]) };
+        }
+        assert_eq!(slab.used_slots(), 8);
+        assert_eq!(slab.free_slots(), 8);
+
+        for i in (0..16).step_by(2) {
+            let new_ptr = slab.alloc();
+            assert!(!new_ptr.is_null());
+            ptrs[i] = new_ptr;
+        }
+        assert!(slab.is_full());
+
+        for ptr in ptrs {
+            unsafe { slab.dealloc(ptr) };
+        }
+        assert!(slab.is_empty());
+    }
+
+    #[test]
+    fn test_write_read_memory() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let mut slab = unsafe { Slab::new(page, 64) };
+
+        let ptr1 = slab.alloc();
+        let ptr2 = slab.alloc();
+
+        unsafe {
+            core::ptr::write_bytes(ptr1, 0xAA, 64);
+            core::ptr::write_bytes(ptr2, 0xBB, 64);
+        }
+
+        unsafe {
+            assert_eq!(*ptr1, 0xAA);
+            assert_eq!(*ptr2, 0xBB);
+        }
+    }
+
+    #[test]
+    fn test_contains() {
+        let mut buf = aligned_page();
+        let page = page_aligned_ptr(&mut buf);
+        let slab = unsafe { Slab::new(page, 64) };
+
+        assert!(slab.contains(page));
+        assert!(slab.contains(unsafe { page.add(2048) }));
+        assert!(!slab.contains(core::ptr::null_mut()));
+        assert!(!slab.contains(unsafe { page.add(PAGE_SIZE) }));
     }
 }
