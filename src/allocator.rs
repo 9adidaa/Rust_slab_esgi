@@ -90,8 +90,10 @@ unsafe impl<P: PageProvider + Sync> GlobalAlloc for SlabAllocator<P> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
     use crate::page::StaticPageProvider;
+    use alloc::vec::Vec;
 
     unsafe fn make_allocator(
         heap: &mut [u8; 65536],

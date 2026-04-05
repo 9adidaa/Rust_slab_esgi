@@ -87,8 +87,11 @@ impl Cache {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
     use crate::page::PAGE_SIZE;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn alloc_pages(count: usize) -> (Vec<u8>, Vec<*mut u8>) {
         let size = PAGE_SIZE * (count + 1);

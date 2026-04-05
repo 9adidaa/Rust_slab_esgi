@@ -99,7 +99,10 @@ impl Slab {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     fn aligned_page() -> Vec<u8> {
         vec![0u8; PAGE_SIZE * 2]
