@@ -43,16 +43,18 @@ impl Cache {
     }
 
     pub fn alloc(&mut self) -> *mut u8 {
-        for slot in self.slabs.iter_mut() {
-            if let Some(slab) = slot {
-                if !slab.is_full() {
-                    return slab.alloc();
-                }
+        for slab in self.slabs.iter_mut().flatten() {
+            if !slab.is_full() {
+                return slab.alloc();
             }
         }
         core::ptr::null_mut()
     }
 
+    /// # Safety
+    ///
+    /// page needs to be valid writable PAGE_SIZE bytes and page aligned
+    /// page shouldnt be used anywhere else after this
     pub unsafe fn add_slab_and_alloc(&mut self, page: *mut u8) -> *mut u8 {
         if self.slab_count >= MAX_SLABS_PER_CACHE {
             return core::ptr::null_mut();
@@ -72,13 +74,15 @@ impl Cache {
         core::ptr::null_mut()
     }
 
+    /// # Safety
+    ///
+    /// ptr must have been allocated from this cache
+    /// dont double free
     pub unsafe fn dealloc(&mut self, ptr: *mut u8) -> bool {
-        for slot in self.slabs.iter_mut() {
-            if let Some(slab) = slot {
-                if slab.contains(ptr) {
-                    unsafe { slab.dealloc(ptr) };
-                    return true;
-                }
+        for slab in self.slabs.iter_mut().flatten() {
+            if slab.contains(ptr) {
+                unsafe { slab.dealloc(ptr) };
+                return true;
             }
         }
         false
